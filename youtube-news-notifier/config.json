@@ -1,5 +1,4 @@
 {
-  "youtube_api_key": "YOUR_YOUTUBE_API_KEY",
   "email": {
     "smtp_server": "smtp.gmail.com",
     "smtp_port": 587,
@@ -7,11 +6,10 @@
     "sender_password": "YOUR_APP_PASSWORD",
     "recipient_email": "wehrmach@gmail.com"
   },
-  "keywords": [
-    "claude"
+  "sources": [
+    "https://www.anthropic.com/news",
+    "https://www.anthropic.com/research"
   ],
-  "check_interval_minutes": 30,
-  "max_results_per_keyword": 5,
-  "language": "en",
-  "published_after_hours": 24
+  "lookback_days": 7,
+  "max_article_chars": 5000
 }
