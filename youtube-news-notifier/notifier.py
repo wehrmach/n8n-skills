@@ -2,28 +2,30 @@
 """
 YouTube News Notifier
 Monitors YouTube for new videos matching specified keywords and sends email notifications.
+Zero external dependencies - uses only Python standard library.
 
 Conceived by Romuald Czlonkowski - www.aiadvisors.pl/en
 """
 
 import json
-import os
 import sys
 import smtplib
 import time
 import signal
 import logging
+import urllib.request
+import urllib.parse
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
 
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-
 BASE_DIR = Path(__file__).parent
 CONFIG_PATH = BASE_DIR / "config.json"
 SEEN_VIDEOS_PATH = BASE_DIR / "seen_videos.json"
+
+YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,37 +53,47 @@ def save_seen_videos(seen):
 
 
 def search_youtube(api_key, keyword, max_results, published_after_hours, language):
-    """Search YouTube for videos matching a keyword."""
-    youtube = build("youtube", "v3", developerKey=api_key)
-
+    """Search YouTube for videos matching a keyword using REST API directly."""
     after = datetime.now(timezone.utc) - timedelta(hours=published_after_hours)
     published_after = after.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    params = urllib.parse.urlencode({
+        "part": "snippet",
+        "q": keyword,
+        "type": "video",
+        "order": "date",
+        "maxResults": max_results,
+        "publishedAfter": published_after,
+        "relevanceLanguage": language,
+        "key": api_key,
+    })
+
+    url = f"{YOUTUBE_SEARCH_URL}?{params}"
+
     try:
-        request = youtube.search().list(
-            q=keyword,
-            part="snippet",
-            type="video",
-            order="date",
-            maxResults=max_results,
-            publishedAfter=published_after,
-            relevanceLanguage=language,
-        )
-        response = request.execute()
-    except HttpError as e:
-        log.error("YouTube API error for keyword '%s': %s", keyword, e)
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        log.error("YouTube API HTTP %d for '%s': %s", e.code, keyword, body[:300])
+        return []
+    except urllib.error.URLError as e:
+        log.error("YouTube API network error for '%s': %s", keyword, e.reason)
         return []
 
     videos = []
-    for item in response.get("items", []):
+    for item in data.get("items", []):
+        vid_id = item["id"]["videoId"]
+        snippet = item["snippet"]
         video = {
-            "id": item["id"]["videoId"],
-            "title": item["snippet"]["title"],
-            "channel": item["snippet"]["channelTitle"],
-            "published": item["snippet"]["publishedAt"],
-            "description": item["snippet"].get("description", ""),
-            "url": f"https://www.youtube.com/watch?v={item['id']['videoId']}",
-            "thumbnail": item["snippet"]["thumbnails"].get("high", {}).get("url", ""),
+            "id": vid_id,
+            "title": snippet["title"],
+            "channel": snippet["channelTitle"],
+            "published": snippet["publishedAt"],
+            "description": snippet.get("description", ""),
+            "url": f"https://www.youtube.com/watch?v={vid_id}",
+            "thumbnail": snippet["thumbnails"].get("high", {}).get("url", ""),
             "keyword": keyword,
         }
         videos.append(video)
@@ -113,6 +125,9 @@ def build_email_html(new_videos):
         )
 
         for v in videos:
+            desc = v["description"][:200]
+            if len(v["description"]) > 200:
+                desc += "..."
             html_parts.append(
                 """
                 <div style="border: 1px solid #ddd; border-radius: 8px; padding: 15px;
@@ -132,7 +147,7 @@ def build_email_html(new_videos):
                             <p style="color: #666; margin: 5px 0;">
                                 <strong>{channel}</strong> &middot; {published}
                             </p>
-                            <p style="color: #444; font-size: 13px;">{description}</p>
+                            <p style="color: #444; font-size: 13px;">{desc}</p>
                         </td>
                     </tr></table>
                 </div>
@@ -142,7 +157,7 @@ def build_email_html(new_videos):
                     title=v["title"],
                     channel=v["channel"],
                     published=v["published"][:10],
-                    description=v["description"][:200] + ("..." if len(v["description"]) > 200 else ""),
+                    desc=desc,
                 )
             )
 
@@ -163,7 +178,7 @@ def send_email(config, new_videos):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = "YouTube Alert: {count} new video(s) for [{keywords}]".format(
         count=len(new_videos),
-        keywords=", ".join(set(v["keyword"] for v in new_videos)),
+        keywords=", ".join(sorted(set(v["keyword"] for v in new_videos))),
     )
     msg["From"] = email_cfg["sender_email"]
     msg["To"] = email_cfg["recipient_email"]
