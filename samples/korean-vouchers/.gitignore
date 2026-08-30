@@ -1,0 +1,5 @@
+# 폰트는 저장소에 포함하지 않는다 (fetch_fonts.sh 로 내려받을 것)
+fonts/*.ttf
+# 중간 산출물(HTML)
+build/
+__pycache__/
