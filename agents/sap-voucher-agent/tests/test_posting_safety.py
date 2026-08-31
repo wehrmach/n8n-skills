@@ -132,3 +132,105 @@ def test_patch_voucher_invalidates_plan(ctx, sap, lookup):
                                  "value": "830100"})
     assert vid not in agent.session.simulated
     assert agent.session.vouchers[vid].line_items[0].gl_account == "830100"
+
+
+# --------------------------------------------------------------- LUW·멱등 규약
+
+def _customs_doc(lookup, with_tax=True):
+    """수입신고필증 - 관세 송장과 부가세 전표 두 문서를 만드는 계획."""
+    from decimal import Decimal
+    doc = _ready(DocType.IMPORT_DECLARATION, lookup)
+    tax = Decimal("253329") if with_tax else Decimal(0)
+    doc.line_items = [LineItem(line_no=1, description="관세 및 통관수수료",
+                               net_amount=Decimal("2533297"), tax_amount=tax,
+                               po_number="4500000002", po_item="00010")]
+    doc.net_total = Decimal("2533297")
+    doc.tax_total = tax
+    doc.gross_total = doc.net_total + tax
+    return doc
+
+
+def _refs(plan_obj):
+    out = []
+    for call in plan_obj.calls:
+        for struct in ("HEADERDATA", "DOCUMENTHEADER", "GOODSMVT_HEADER"):
+            h = call.params.get(struct)
+            if isinstance(h, dict) and h.get("REF_DOC_NO"):
+                out.append(h["REF_DOC_NO"])
+    return out
+
+
+def test_multi_document_plan_uses_distinct_references(ctx, rules, lookup):
+    """한 증빙이 두 문서를 만들면 참조번호가 겹치면 안 된다.
+
+    겹치면 두 번째 전기가 자기 자신의 첫 번째 문서와 중복으로 판정되어 실패한다.
+    """
+    from sap_voucher_agent.planner import plan as build
+    p = build(_customs_doc(lookup), ctx, rules)
+    assert len(p.calls) >= 2
+    refs = _refs(p)
+    assert len(refs) == len(set(refs)), f"참조번호 중복: {refs}"
+    assert all(len(r) <= 16 for r in refs)
+
+
+def test_multi_document_plan_posts_both_documents(ctx, sap, rules, lookup):
+    from sap_voucher_agent.planner import plan as build
+    p = build(_customs_doc(lookup), ctx, rules)
+    out = post(p, sap, dry_run=False, allow_unapproved=True)
+    assert out.success, out.summary()
+    assert len(out.document_numbers) >= 2
+
+
+def test_customs_invoice_sends_taxdata_when_gross_includes_tax(ctx, rules, lookup):
+    """총액에 세액을 넣었으면 TAXDATA 도 넘겨야 MIRO 가 균형을 맞춘다."""
+    from decimal import Decimal
+    from sap_voucher_agent.planner import plan as build
+    p = build(_customs_doc(lookup), ctx, rules)
+    miro = next(c for c in p.calls if c.bapi == "BAPI_INCOMINGINVOICE_CREATE")
+    gross = Decimal(miro.params["HEADERDATA"]["GROSS_AMOUNT"])
+    items = sum(Decimal(i["ITEM_AMOUNT"]) for i in miro.params["ITEMDATA"])
+    taxes = sum(Decimal(t["TAX_AMOUNT"]) for t in miro.params.get("TAXDATA", []))
+    assert gross == items + taxes
+    assert all(t["TAX_CODE"] for t in miro.params.get("TAXDATA", []))
+
+
+def test_commit_failure_is_reported_as_failure(ctx, rules, lookup):
+    """COMMIT 이 실패하면 채번된 문서번호가 있어도 성공으로 보고하면 안 된다."""
+    sap = MockClient(fail_on={"BAPI_TRANSACTION_COMMIT"})
+    p = plan(_ready(DocType.CASH_RECEIPT, lookup), ctx, rules)
+    out = post(p, sap, dry_run=False, allow_unapproved=True)
+    assert not out.success
+    assert not out.committed
+    assert out.rolled_back
+    assert "COMMIT 실패" in out.summary()
+
+
+def test_testrun_rolls_back_luw_before_real_posting(ctx, rules, lookup):
+    """TESTRUN 은 처리 로직을 태우므로 실제 전기 전에 LUW 를 정리해야 한다."""
+    sap = MockClient()
+    p = plan(_ready(DocType.PURCHASE_ORDER, lookup), ctx, rules)
+    out = post(p, sap, dry_run=False, allow_unapproved=True)
+    assert out.success
+    names = [n for n, _ in sap.calls]
+    testrun_idx = names.index("BAPI_PO_CREATE1")
+    rollback_idx = names.index("BAPI_TRANSACTION_ROLLBACK")
+    real_idx = [i for i, n in enumerate(names) if n == "BAPI_PO_CREATE1"][1]
+    assert testrun_idx < rollback_idx < real_idx
+    assert not out.rolled_back          # 정리용 롤백은 실패가 아니다
+
+
+def test_dry_run_with_testrun_leaves_no_dirty_luw(ctx, rules, lookup):
+    sap = MockClient()
+    out = post(plan(_ready(DocType.PURCHASE_ORDER, lookup), ctx, rules),
+               sap, dry_run=True)
+    assert out.success and out.dry_run
+    assert sap.rolled_back == 1
+    assert sap.committed == 0
+
+
+def test_check_only_bapi_does_not_rollback(ctx, rules, lookup):
+    """부작용 없는 CHECK BAPI 만 쓴 경우 불필요한 롤백을 하지 않는다."""
+    sap = MockClient()
+    post(plan(_ready(DocType.CASH_RECEIPT, lookup), ctx, rules), sap, dry_run=True)
+    assert sap.rolled_back == 0
+    assert [n for n, _ in sap.calls] == ["BAPI_ACC_DOCUMENT_CHECK"]

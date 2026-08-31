@@ -87,24 +87,30 @@ def _link_previous(call: BapiCall, outcome: PostingOutcome) -> None:
         if bp:
             call.params["BUSINESSPARTNER"] = bp
     elif call.bapi == "BAPI_ACC_DOCUMENT_POST" and "BAPI_INCOMINGINVOICE_CREATE" in docs:
-        header = call.params.get("DOCUMENTHEADER")
-        if isinstance(header, dict):
-            header.setdefault("REF_DOC_NO", docs["BAPI_INCOMINGINVOICE_CREATE"][:16])
+        # 선행 MM 송장번호를 FI 전표 적요에 남겨 두 문서를 대사할 수 있게 한다.
+        # 참조번호(REF_DOC_NO)는 멱등키이므로 덮어쓰지 않는다.
+        for row in call.params.get("ACCOUNTGL", []):
+            if isinstance(row, dict) and not row.get("REF_KEY_1"):
+                row["REF_KEY_1"] = docs["BAPI_INCOMINGINVOICE_CREATE"][:20]
 
 
-def _run_check(client: SapClient, call: BapiCall) -> PostingResult:
+def _run_check(client: SapClient, call: BapiCall) -> tuple[PostingResult, bool]:
     """사전 검증을 수행한다. 3단계 폴백:
 
       1) 전용 CHECK BAPI (예: BAPI_ACC_DOCUMENT_CHECK)
       2) BAPI 자체의 TESTRUN 플래그 (예: BAPI_PO_CREATE1 TESTRUN='X')
       3) 둘 다 없으면 로컬 파라미터 검증만 수행했음을 명시한다
+
+    반환값의 두 번째 항목은 이 검증이 SAP LUW 를 더럽혔는지 여부다.
+    TESTRUN 은 실제 처리 로직을 태우므로 후속 전기 전에 롤백으로 정리해야 한다.
     """
     bd = BAPIS.get(call.bapi)
 
     if call.check_bapi and call.check_bapi != "BAPI_INCOMINGINVOICE_PARK":
         with TimedCall() as t:
             raw = client.call(call.check_bapi, **call.params)
-        return interpret(call.check_bapi, raw, dry_run=True, elapsed_ms=t.elapsed_ms)
+        return (interpret(call.check_bapi, raw, dry_run=True,
+                          elapsed_ms=t.elapsed_ms), False)
 
     if bd and bd.testrun_param:
         try:
@@ -112,14 +118,14 @@ def _run_check(client: SapClient, call: BapiCall) -> PostingResult:
                 raw = client.call(call.bapi, **{**call.params, bd.testrun_param: "X"})
             res = interpret(call.bapi, raw, dry_run=True, elapsed_ms=t.elapsed_ms)
             res.document_number = None      # TESTRUN 은 문서를 만들지 않는다
-            return res
+            return res, True
         except Exception as exc:            # TESTRUN 미지원 릴리스 대비
             return PostingResult(
                 bapi=call.bapi, success=True, dry_run=True,
                 messages=[BapiMessage(
                     type="W", id="ZAGENT", number="003",
                     message=f"{call.bapi} TESTRUN 검증을 수행할 수 없습니다({exc}). "
-                            "로컬 파라미터 검증만 완료했습니다.")])
+                            "로컬 파라미터 검증만 완료했습니다.")]), False
 
     return PostingResult(
         bapi=call.bapi, success=True, dry_run=True,
@@ -127,7 +133,7 @@ def _run_check(client: SapClient, call: BapiCall) -> PostingResult:
             type="I", id="ZAGENT", number="002",
             message=f"{call.bapi} 은(는) 표준 CHECK/TESTRUN 을 제공하지 않습니다. "
                     "로컬 파라미터 검증만 수행했습니다. 실제 전기 시 오류가 "
-                    "발생할 수 있습니다.")])
+                    "발생할 수 있습니다.")]), False
 
 
 def post(plan: PostingPlan, client: SapClient, *, dry_run: bool = True,
@@ -145,45 +151,68 @@ def post(plan: PostingPlan, client: SapClient, *, dry_run: bool = True,
             + " — 승인 후 allow_unapproved=True 로 재실행하십시오.")
         return out
 
+    # ── 1단계: 사전 검증 ────────────────────────────────────────────────
+    luw_dirty = False
     for call in plan.calls:
         _link_previous(call, out)
-
-        check = _run_check(client, call)
+        check, touched = _run_check(client, call)
+        luw_dirty = luw_dirty or touched
         out.results.append(check)
         if not check.success:
             out.aborted_reason = f"{check.bapi} 사전 검증 실패"
-            _rollback(client, out, dry_run)
+            _rollback(client, out, mark=True, needed=luw_dirty or not dry_run)
             return out
 
-        if dry_run:
-            continue
+    # TESTRUN 은 실제 처리 로직을 태워 LUW 에 잠금·버퍼를 남긴다.
+    # 실제 전기(또는 세션 반환) 전에 반드시 정리한다.
+    if luw_dirty:
+        _rollback(client, out, mark=False, needed=True)
 
+    if dry_run:
+        return out
+
+    # ── 2단계: 실제 전기 ────────────────────────────────────────────────
+    for call in plan.calls:
+        _link_previous(call, out)
         with TimedCall() as t:
             raw = client.call(call.bapi, **call.params)
         result = interpret(call.bapi, raw, elapsed_ms=t.elapsed_ms)
         out.results.append(result)
         if not result.success:
             out.aborted_reason = f"{call.bapi} 전기 실패"
-            _rollback(client, out, dry_run)
+            _rollback(client, out, mark=True, needed=True)
             return out
 
-    if dry_run:
-        return out
-
+    # ── 3단계: 커밋 ─────────────────────────────────────────────────────
     if auto_commit and any(c.commit for c in plan.calls):
-        with TimedCall():
-            client.call("BAPI_TRANSACTION_COMMIT", WAIT="X")
+        with TimedCall() as t:
+            raw = client.call("BAPI_TRANSACTION_COMMIT", WAIT="X")
+        commit_res = interpret("BAPI_TRANSACTION_COMMIT", raw, elapsed_ms=t.elapsed_ms)
+        if not commit_res.success:
+            # 커밋이 실패하면 앞선 문서번호는 채번만 되고 저장되지 않는다.
+            out.results.append(commit_res)
+            out.aborted_reason = (
+                "COMMIT 실패 - 전기된 문서가 데이터베이스에 반영되지 않았습니다")
+            _rollback(client, out, mark=True, needed=True)
+            return out
         out.committed = True
         for r in out.results:
             r.committed = True
     return out
 
 
-def _rollback(client: SapClient, out: PostingOutcome, dry_run: bool) -> None:
-    if dry_run:
+def _rollback(client: SapClient, out: PostingOutcome, *, mark: bool,
+              needed: bool = True) -> None:
+    """LUW 를 롤백한다.
+
+    mark=True 면 실패에 따른 롤백으로 기록한다(성공 판정에 반영).
+    mark=False 는 TESTRUN 이 더럽힌 LUW 를 청소하는 정상 동작이다.
+    """
+    if not needed:
         return
     try:
         client.call("BAPI_TRANSACTION_ROLLBACK")
-        out.rolled_back = True
+        if mark:
+            out.rolled_back = True
     except Exception as exc:                      # pragma: no cover
         out.aborted_reason = (out.aborted_reason or "") + f" (롤백 실패: {exc})"

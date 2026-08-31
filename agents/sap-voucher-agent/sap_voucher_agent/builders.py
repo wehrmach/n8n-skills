@@ -622,12 +622,15 @@ def mm_invoice(doc: VoucherDocument, ctx: PostingContext,
         "ITEMDATA": items,
     }
     if doc.tax_total > 0:
-        params["TAXDATA"] = [{
-            "TAX_CODE": doc.line_items[0].tax_code if doc.line_items else "V1",
-            "TAX_AMOUNT": amt(doc.tax_total),
-            "TAX_BASE_AMOUNT": amt(doc.net_total),
-        }]
+        params["TAXDATA"] = [_tax_row(doc)]
     return params
+
+
+def _tax_row(doc: VoucherDocument) -> dict[str, Any]:
+    """MIRO TAXDATA 한 줄. 세금코드가 비어 있으면 기본 매입 과세코드를 쓴다."""
+    code = next((li.tax_code for li in doc.line_items if li.tax_code), None) or "V1"
+    return {"TAX_CODE": code, "TAX_AMOUNT": amt(doc.tax_total),
+            "TAX_BASE_AMOUNT": amt(doc.net_total)}
 
 
 @builder("mm_invoice_import")
@@ -671,7 +674,12 @@ def mm_invoice_customs(doc: VoucherDocument, ctx: PostingContext,
             "COND_TYPE": "FRA1",        # 부대비용 조건유형(관세/운임)
             "ITEM_TEXT": (li.description or "관세·통관비")[:50],
         })
-    return {"HEADERDATA": _mm_header(doc, ctx), "ITEMDATA": items}
+    params: dict[str, Any] = {"HEADERDATA": _mm_header(doc, ctx), "ITEMDATA": items}
+    if doc.tax_total > 0:
+        # 총액(GROSS_AMOUNT)에 세액이 포함되어 있으므로 TAXDATA 를 함께 넘기지
+        # 않으면 MIRO 가 차액을 잡아 전기를 거부한다.
+        params["TAXDATA"] = [_tax_row(doc)]
+    return params
 
 
 @builder("mm_po")

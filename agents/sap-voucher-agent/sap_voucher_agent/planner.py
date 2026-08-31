@@ -109,7 +109,39 @@ def plan(doc: VoucherDocument, ctx: PostingContext,
             commit=step.commit and (bd.needs_commit if bd else True),
             check_bapi=(bd.check_bapi if bd else None),
         ))
+    _uniquify_references(p)
     return p
+
+
+#: 참조번호(XBLNR)를 담는 헤더 구조와 필드
+_REF_FIELDS = (("DOCUMENTHEADER", "REF_DOC_NO"), ("HEADERDATA", "REF_DOC_NO"),
+               ("GOODSMVT_HEADER", "REF_DOC_NO"),
+               ("ENTRYSHEETHEADER", "REF_DOC_NO"))
+
+
+def _uniquify_references(p: PostingPlan) -> None:
+    """한 계획이 문서를 둘 이상 만들면 참조번호가 겹치지 않게 한다.
+
+    중복 전기 차단은 참조번호(XBLNR, 16자)로 이루어지므로, 같은 증빙에서
+    나온 두 문서가 같은 참조번호를 쓰면 두 번째 전기가 자기 자신의 첫 번째
+    문서와 충돌해 실패한다(예: 수입신고필증의 관세 송장 + 수입 부가세 전표).
+    """
+    seen: set[str] = set()
+    for idx, call in enumerate(p.calls, 1):
+        for struct, field in _REF_FIELDS:
+            header = call.params.get(struct)
+            if not isinstance(header, dict):
+                continue
+            ref = header.get(field)
+            if not ref:
+                continue
+            if ref not in seen:
+                seen.add(ref)
+                continue
+            suffix = f"-{idx}"
+            new_ref = ref[:16 - len(suffix)] + suffix
+            header[field] = new_ref
+            seen.add(new_ref)
 
 
 def explain(p: PostingPlan) -> str:
