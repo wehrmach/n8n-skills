@@ -134,7 +134,7 @@ SAP NetWeaver RFC SDK 설치 후 `pip install pyrfc` 가 필요합니다.
 ## 테스트
 
 ```bash
-python -m pytest tests -q          # 178 tests
+python -m pytest tests -q          # 198 tests
 python examples/run_all_types.py   # 50종 Mock 전기 커버리지 표
 ```
 
