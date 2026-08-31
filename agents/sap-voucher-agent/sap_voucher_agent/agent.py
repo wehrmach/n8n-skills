@@ -318,7 +318,7 @@ class VoucherAgent:
                 if policy == "intangible_capitalization":
                     parsed: object = value.strip().lower() in ("true", "1", "y", "yes", "예")
                 elif policy == "period_end":
-                    from .extraction import _date as parse_date
+                    from .extraction import parse_date
                     parsed = parse_date(value)
                     if parsed is None:
                         return f"날짜를 해석할 수 없습니다: {value}"
@@ -476,14 +476,14 @@ def _coerce(obj: Any, field_name: str, value: str) -> Any:
     if isinstance(current, Decimal):
         return Decimal(value)
     if isinstance(current, _date):
-        from .extraction import _date as parse_date
+        from .extraction import parse_date
         return parse_date(value)
     if annotation is not None:
         ann = str(annotation.annotation)
         if "Decimal" in ann:
             return Decimal(value)
         if "date" in ann:
-            from .extraction import _date as parse_date
+            from .extraction import parse_date
             return parse_date(value)
         if "float" in ann:
             return float(value)

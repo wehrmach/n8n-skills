@@ -63,7 +63,7 @@ class MockClient:
     # ------------------------------------------------------------ RFC 호출
 
     def call(self, function_name: str, **params: Any) -> dict[str, Any]:
-        self.calls.append((function_name, params))
+        self.calls.append((function_name, dict(params)))   # 로그는 원본 그대로
         testrun = str(params.pop("TESTRUN", "")).upper() == "X"
 
         if function_name in self.fail_on:

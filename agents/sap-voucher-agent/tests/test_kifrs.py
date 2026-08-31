@@ -368,3 +368,55 @@ def test_every_doc_type_has_a_kifrs_conclusion(kctx):
         assert a.standards, f"{dt} 적용 기준서 없음"
         assert a.rationale or a.recognition is Recognition.NO_ENTRY, \
             f"{dt} 판단 근거 없음"
+
+
+# --------------------------------------------------------------- 기간배분 경계
+
+def _defer_line(desc, amount, start, end, kctx):
+    from sap_voucher_agent.kifrs import build_deferral
+    doc = VoucherDocument(doc_type=DocType.TAX_INVOICE_IN, doc_date=date(2026, 3, 1))
+    li = LineItem(line_no=1, description=desc, net_amount=D(amount),
+                  service_start=start, service_end=end)
+    return build_deferral(li, doc, kctx)
+
+
+def test_amortization_never_starts_before_service_begins(kctx):
+    """급부를 받기 전에 비용을 인식하면 발생주의에 어긋난다."""
+    d = _defer_line("차기 연간 라이선스", "12000000",
+                    date(2026, 7, 1), date(2027, 6, 30), kctx)
+    assert d is not None
+    assert d.current_portion == D(0)
+    assert d.schedule[0].posting_date >= date(2026, 7, 1)
+    assert len(d.schedule) == 12
+
+
+def test_amortization_schedule_sums_to_deferred_amount(kctx):
+    """나누어떨어지지 않는 금액도 스케줄 합계가 이연액과 정확히 일치해야 한다."""
+    for amount, start, end in [
+        ("12000000", date(2026, 3, 1), date(2027, 2, 28)),
+        ("10000000", date(2026, 3, 1), date(2026, 9, 30)),
+        ("7777777", date(2026, 2, 1), date(2027, 1, 31)),
+        ("12000000", date(2026, 7, 1), date(2027, 6, 30)),
+    ]:
+        d = _defer_line("기간계약", amount, start, end, kctx)
+        assert d is not None
+        assert sum(e.amount for e in d.schedule) == d.deferred_portion
+        assert d.current_portion + d.deferred_portion == D(amount)
+
+
+def test_mostly_elapsed_service_defers_only_remainder(kctx):
+    d = _defer_line("전기 개시 연간계약", "12000000",
+                    date(2025, 7, 1), date(2026, 6, 30), kctx)
+    assert d.current_portion == D("9000000")     # 2025-07 ~ 2026-03 = 9개월
+    assert len(d.schedule) == 3
+
+
+def test_mixed_treatment_document_is_flagged(kctx):
+    """자본화와 이연이 섞인 문서는 문서 단위 결론만으로 판단하면 안 된다."""
+    doc = _ap("혼합", D(0), lines=[
+        LineItem(line_no=1, description="서버 장비 구입", net_amount=D("15000000")),
+        LineItem(line_no=2, description="연간 유지보수료", net_amount=D("12000000"),
+                 service_start=date(2026, 1, 1), service_end=date(2026, 12, 31))])
+    a = assess(doc, kctx)
+    assert a.account_overrides and a.deferrals
+    assert any("섞여 있다" in r for r in a.rationale)

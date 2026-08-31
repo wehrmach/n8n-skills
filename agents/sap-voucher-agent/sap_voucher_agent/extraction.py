@@ -122,7 +122,8 @@ def _dec_opt(value: str | None) -> Optional[Decimal]:
     return _dec(value)
 
 
-def _date(value: str | None) -> Optional[date]:
+def parse_date(value: str | None) -> Optional[date]:
+    """느슨한 한국어/ISO 날짜 문자열을 date 로 변환한다. 실패하면 None."""
     if not value:
         return None
     v = str(value).strip()
@@ -138,6 +139,10 @@ def _date(value: str | None) -> Optional[date]:
         except ValueError:
             return None
     return None
+
+
+#: 하위 호환 별칭
+_date = parse_date
 
 
 def _party(p: ExtractedParty) -> Optional[Party]:

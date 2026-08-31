@@ -257,7 +257,9 @@ def build_deferral(li: LineItem, doc: VoucherDocument,
         return None
 
     schedule: list[AmortizationEntry] = []
-    cursor = _month_end(cutoff) + timedelta(days=1)
+    # 상각은 보고기간 다음 달부터 시작하되, 용역이 아직 개시되지 않았다면
+    # 개시월부터 시작한다. 급부를 받기 전에 비용을 인식하면 발생주의에 어긋난다.
+    cursor = max(_month_end(cutoff) + timedelta(days=1), start)
     remaining = deferred
     for i in range(total_months - elapsed):
         pd = _month_end(cursor)
@@ -697,6 +699,13 @@ def assess(doc: VoucherDocument, ctx: PostingContext,
     _assess_inventory_costs(doc, a)
     _assess_offsetting(doc, a)
     _assess_provision(doc, a)
+
+    # 한 문서에 자본화와 이연이 섞이면 문서 단위 결론만으로는 오해를 부른다.
+    if a.deferrals and a.account_overrides:
+        a.rationale.append(
+            f"이 문서에는 서로 다른 처리가 섞여 있다. 자본화 대상 "
+            f"{len(a.account_overrides)}개 라인과 기간배분 대상 "
+            f"{len(a.deferrals)}개 라인을 각각 확인하라.")
 
     # 중복 기준서 제거(선언 순서 유지)
     seen: list[str] = []

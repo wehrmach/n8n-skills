@@ -56,10 +56,10 @@ def test_amount_parsing(raw, expected):
 @pytest.mark.parametrize("raw,expected", [
     ("2026-03-31", date(2026, 3, 31)), ("2026.03.31", date(2026, 3, 31)),
     ("20260331", date(2026, 3, 31)), ("2026년 03월 31일", date(2026, 3, 31)),
-    ("", None), ("날짜없음", None),
+    ("", None), ("날짜없음", None), (None, None),
 ])
 def test_date_parsing(raw, expected):
-    assert ex._date(raw) == expected
+    assert ex.parse_date(raw) == expected
 
 
 def test_to_voucher_maps_core_fields():

@@ -56,7 +56,10 @@ LINE_SUM_EXEMPT: frozenset[DocType] = frozenset({
     DocType.PAYSLIP, DocType.SOCIAL_INSURANCE_BILL, DocType.BANK_STATEMENT,
 })
 
-#: 회계 전기 대상이 아닌 문서(마스터/첨부)
+#: 회계 전기 대상이 아닌 문서(마스터/첨부).
+#: kifrs.NO_ENTRY_DOCS 와 의도적으로 다르다. 이 집합은 "금액 검증을 생략할
+#: 문서"이고, kifrs 쪽은 "손익을 인식하지 않는 문서"다. 발주서는 여기 없지만
+#: (금액 검증 필요) kifrs 에서는 미이행계약으로 인식 대상이 아니다.
 NON_POSTING_DOCS: frozenset[DocType] = frozenset({
     DocType.BUSINESS_REGISTRATION, DocType.BANKBOOK_COPY,
     DocType.EVIDENCE_COVER_SHEET, DocType.PACKING_LIST, DocType.BILL_OF_LADING,

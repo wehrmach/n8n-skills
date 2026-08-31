@@ -44,8 +44,8 @@ def _ctx(args: argparse.Namespace) -> PostingContext:
 def _parse_date(value: str | None):
     if not value:
         return None
-    from .extraction import _date
-    return _date(value)
+    from .extraction import parse_date
+    return parse_date(value)
 
 
 def _client(args: argparse.Namespace):
