@@ -230,6 +230,27 @@ class AccDoc:
         return p
 
 
+def xflags(row: dict[str, Any], *key_fields: str) -> dict[str, Any]:
+    """MM BAPI 의 변경 플래그(X-구조)를 만든다.
+
+    SAP 규약상 X-구조는 (a) 키 필드는 값을 그대로 복사하고 `<키>X` 플래그를
+    'X' 로 세우며, (b) 나머지는 실제로 값을 넘긴 필드만 'X' 로 표시한다.
+    값이 빈 필드에 'X' 를 세우면 "그 필드를 공란으로 설정하라"는 뜻이 되어
+    릴리스에 따라 오류가 나거나 의도치 않게 필드가 지워진다.
+    """
+    out: dict[str, Any] = {}
+    for k in key_fields:
+        if k in row:
+            out[k] = row[k]
+            out[f"{k}X"] = "X"
+    for k, v in row.items():
+        if k in key_fields:
+            continue
+        if v not in ("", None, []):
+            out[k] = "X"
+    return out
+
+
 def _vendor(doc: VoucherDocument) -> str:
     p = doc.supplier
     return (p.sap_vendor if p and p.sap_vendor else "") or "UNMAPPED"
@@ -667,8 +688,7 @@ def mm_po(doc: VoucherDocument, ctx: PostingContext,
         "DOC_DATE": d8(doc.doc_date),
         "REF_1": idempotency_key(doc),
     }
-    headerx = {k: "X" for k in header if k != "COMP_CODE"}
-    headerx["COMP_CODE"] = "X"
+    headerx = xflags(header)          # 값이 있는 필드만 변경 대상으로 표시
     items, itemsx, accts, acctsx, sched, schedx = [], [], [], [], [], []
     for i, li in enumerate(doc.line_items, 1):
         no = f"{i * 10:05d}"
@@ -687,7 +707,7 @@ def mm_po(doc: VoucherDocument, ctx: PostingContext,
             "ACCTASSCAT": "K" if is_service else "",       # K=코스트센터
             "ITEM_CAT": "D" if is_service else "",          # D=서비스
         })
-        itemsx.append({k: ("X" if k != "PO_ITEM" else no) for k in items[-1]})
+        itemsx.append(xflags(items[-1], "PO_ITEM"))
         if is_service:
             accts.append({
                 "PO_ITEM": no, "SERIAL_NO": "01",
@@ -695,13 +715,11 @@ def mm_po(doc: VoucherDocument, ctx: PostingContext,
                 "COSTCENTER": li.cost_center or ctx.default_cost_center or "",
                 "QUANTITY": amt(li.quantity or 1),
             })
-            acctsx.append({"PO_ITEM": no, "SERIAL_NO": "01", "PO_ITEMX": "X",
-                           "GL_ACCOUNT": "X", "COSTCENTER": "X", "QUANTITY": "X"})
+            acctsx.append(xflags(accts[-1], "PO_ITEM", "SERIAL_NO"))
         sched.append({"PO_ITEM": no, "SCHED_LINE": "0001",
                       "DELIVERY_DATE": d8(doc.due_date or doc.doc_date),
                       "QUANTITY": amt(li.quantity or 1)})
-        schedx.append({"PO_ITEM": no, "SCHED_LINE": "0001", "PO_ITEMX": "X",
-                       "DELIVERY_DATE": "X", "QUANTITY": "X"})
+        schedx.append(xflags(sched[-1], "PO_ITEM", "SCHED_LINE"))
     params = {"POHEADER": header, "POHEADERX": headerx,
               "POITEM": items, "POITEMX": itemsx,
               "POSCHEDULE": sched, "POSCHEDULEX": schedx}
@@ -741,12 +759,9 @@ def mm_pr(doc: VoucherDocument, ctx: PostingContext,
     return {"PRHEADER": {"PR_TYPE": "NB"},
             "PRHEADERX": {"PR_TYPE": "X"},
             "PRITEM": items,
-            "PRITEMX": [{"PREQ_ITEM": it["PREQ_ITEM"],
-                         **{k: "X" for k in it if k != "PREQ_ITEM"}} for it in items],
+            "PRITEMX": [xflags(it, "PREQ_ITEM") for it in items],
             "PRACCOUNT": accts,
-            "PRACCOUNTX": [{"PREQ_ITEM": a["PREQ_ITEM"], "SERIAL_NO": a["SERIAL_NO"],
-                            "PREQ_ITEMX": "X", "SERIAL_NOX": "X",
-                            "G_L_ACCT": "X", "COST_CTR": "X"} for a in accts]}
+            "PRACCOUNTX": [xflags(a, "PREQ_ITEM", "SERIAL_NO") for a in accts]}
 
 
 @builder("mm_contract")
@@ -777,10 +792,9 @@ def mm_contract(doc: VoucherDocument, ctx: PostingContext,
         "ITEM_CAT": "D",
     } for i, li in enumerate(doc.line_items, 1)]
     return {"HEADER": header,
-            "HEADERX": {k: "X" for k in header},
+            "HEADERX": xflags(header),
             "ITEM": items,
-            "ITEMX": [{"ITEM_NO": it["ITEM_NO"],
-                       **{k: "X" for k in it if k != "ITEM_NO"}} for it in items]}
+            "ITEMX": [xflags(it, "ITEM_NO") for it in items]}
 
 
 @builder("mm_gr")

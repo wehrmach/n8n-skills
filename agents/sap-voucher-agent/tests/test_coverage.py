@@ -64,3 +64,49 @@ def test_fi_documents_are_balanced(resolved_samples, ctx, rules):
                         if a.get("CURR_TYPE") == "00")
             assert abs(total) < Decimal("0.01"), (
                 f"{dt} FI 전표 차대 불일치: {total}")
+
+
+# --------------------------------------------------------------- MM X-구조 규약
+
+MM_X_PAIRS = [
+    ("mm_po", DocType.PURCHASE_ORDER,
+     [("POITEM", "POITEMX", ("PO_ITEM",)),
+      ("POSCHEDULE", "POSCHEDULEX", ("PO_ITEM", "SCHED_LINE")),
+      ("POACCOUNT", "POACCOUNTX", ("PO_ITEM", "SERIAL_NO"))]),
+    ("mm_pr", DocType.PURCHASE_APPROVAL,
+     [("PRITEM", "PRITEMX", ("PREQ_ITEM",)),
+      ("PRACCOUNT", "PRACCOUNTX", ("PREQ_ITEM", "SERIAL_NO"))]),
+    ("mm_contract", DocType.SERVICE_CONTRACT,
+     [("ITEM", "ITEMX", ("ITEM_NO",))]),
+]
+
+
+@pytest.mark.parametrize("builder_name,dt,pairs", MM_X_PAIRS,
+                         ids=[p[0] for p in MM_X_PAIRS])
+def test_mm_change_flags_follow_sap_convention(builder_name, dt, pairs, ctx, rules):
+    """X-구조는 값이 있는 필드만 'X' 로 표시하고 키 필드에는 <키>X 를 세운다.
+
+    빈 필드에 'X' 를 세우면 SAP 는 '그 필드를 공란으로 설정하라'로 해석한다.
+    """
+    from sap_voucher_agent.builders import build
+    from sap_voucher_agent.fixtures import sample
+
+    params = build(builder_name, sample(dt), ctx, rules)
+    for data_key, flag_key, keys in pairs:
+        rows, flags = params.get(data_key), params.get(flag_key)
+        assert rows and flags, f"{builder_name}: {data_key}/{flag_key} 누락"
+        assert len(rows) == len(flags)
+        for row, flag in zip(rows, flags):
+            for k in keys:
+                assert flag.get(k) == row.get(k), f"{flag_key}: 키 {k} 값 불일치"
+                assert flag.get(f"{k}X") == "X", f"{flag_key}: {k}X 플래그 누락"
+            empty_flagged = [k for k, v in row.items()
+                             if v in ("", None) and flag.get(k) == "X"]
+            assert not empty_flagged, (
+                f"{flag_key}: 빈 필드에 변경플래그가 켜졌다 {empty_flagged}")
+
+
+def test_xflags_helper_semantics():
+    from sap_voucher_agent.builders import xflags
+    out = xflags({"PO_ITEM": "00010", "MATERIAL": "", "PLANT": "1000"}, "PO_ITEM")
+    assert out == {"PO_ITEM": "00010", "PO_ITEMX": "X", "PLANT": "X"}
