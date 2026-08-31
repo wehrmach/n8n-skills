@@ -33,7 +33,19 @@ def _ctx(args: argparse.Namespace) -> PostingContext:
         distribution_channel=args.dist_channel, division=args.division,
         default_cost_center=args.cost_center,
         approval_threshold=Decimal(str(args.approval_threshold)),
+        capitalization_threshold=Decimal(str(args.capitalization_threshold)),
+        deferral_min_amount=Decimal(str(args.deferral_min_amount)),
+        lease_short_term_months=args.lease_short_term_months,
+        period_end=_parse_date(args.period_end),
+        intangible_capitalization=args.capitalize_development,
         dry_run=not getattr(args, "live", False))
+
+
+def _parse_date(value: str | None):
+    if not value:
+        return None
+    from .extraction import _date
+    return _date(value)
 
 
 def _client(args: argparse.Namespace):
@@ -134,6 +146,44 @@ def cmd_post(args: argparse.Namespace) -> int:
     return 0 if out.success else 1
 
 
+def cmd_kifrs(args: argparse.Namespace) -> int:
+    """K-IFRS 기준서 카탈로그 또는 특정 증빙 유형의 회계판단을 출력한다."""
+    from .fixtures import FACTORIES
+    from .kifrs import NO_ENTRY_DOCS, SETTLEMENT_DOCS, STANDARDS, assess
+
+    if not args.doc_type or args.doc_type == "standards":
+        print("적용 K-IFRS 기준서")
+        print("-" * 78)
+        for code, desc in STANDARDS.items():
+            print(f"  {('K-IFRS ' + code) if code != 'CF' else '개념체계':<14} {desc}")
+        print("-" * 78)
+        print("회계 인식 대상이 아닌 증빙(미이행계약·물류문서):")
+        print("  " + ", ".join(KR_NAME[d] for d in sorted(NO_ENTRY_DOCS,
+                                                          key=lambda x: x.value)))
+        print("손익 미발생(채권·채무 소거) 증빙:")
+        print("  " + ", ".join(KR_NAME[d] for d in sorted(SETTLEMENT_DOCS,
+                                                          key=lambda x: x.value)))
+        return 0
+
+    if args.doc_type == "all":
+        ctx = _ctx(args)
+        print(f"{'증빙 유형':<30} {'K-IFRS 인식':<22} 기준서")
+        print("-" * 100)
+        for dt, factory in FACTORIES.items():
+            a = assess(factory(), ctx)
+            print(f"{KR_NAME[dt]:<30} {a.recognition.kr:<22} "
+                  f"{', '.join(a.standards)}")
+        return 0
+
+    try:
+        dt = DocType(args.doc_type)
+    except ValueError:
+        print(f"알 수 없는 문서 유형: {args.doc_type}")
+        return 1
+    print(assess(FACTORIES[dt](), _ctx(args)).summary())
+    return 0
+
+
 def cmd_agent(args: argparse.Namespace) -> int:
     from .agent import VoucherAgent
     ctx = _ctx(args)
@@ -163,6 +213,17 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--division", default="00")
     ap.add_argument("--cost-center", default="1000-ADM")
     ap.add_argument("--approval-threshold", default="10000000")
+    # ── K-IFRS 회계정책 ──────────────────────────────────────────────────
+    ap.add_argument("--period-end", default=None,
+                    help="보고기간 종료일 YYYY-MM-DD (기간귀속 판단 기준)")
+    ap.add_argument("--capitalization-threshold", default="1000000",
+                    help="자산 인식 최소금액(중요성 기준)")
+    ap.add_argument("--deferral-min-amount", default="100000",
+                    help="선급비용 이연 최소금액")
+    ap.add_argument("--lease-short-term-months", type=int, default=12,
+                    help="K-IFRS 1116 단기리스 면제 기준(개월)")
+    ap.add_argument("--capitalize-development", action="store_true",
+                    help="개발비 자본화 요건(K-IFRS 1038) 충족을 회사가 판정했음")
 
     sub = ap.add_subparsers(dest="command", required=True)
 
@@ -183,6 +244,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--live", action="store_true")
     p.add_argument("--approve", action="store_true", help="승인 필요 전기를 승인 처리")
     p.set_defaults(func=cmd_post)
+
+    p = sub.add_parser("kifrs", help="K-IFRS 기준서 및 증빙별 회계판단 조회")
+    p.add_argument("doc_type", nargs="?", default="standards",
+                   help="'standards'(기본) | 'all' | 문서유형 코드")
+    p.set_defaults(func=cmd_kifrs)
 
     p = sub.add_parser("agent", help="에이전트 자율 실행")
     p.add_argument("instruction")

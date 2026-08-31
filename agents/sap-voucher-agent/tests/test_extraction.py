@@ -33,8 +33,10 @@ def _extracted(**kw) -> ExtractedVoucher:
         line_items=[ExtractedLine(
             line_no=1, description="ERP 연동 모듈 개발", spec="1식", quantity="1",
             unit="식", unit_price="8000000", net_amount="8000000",
-            tax_amount="800000", account_hint="")],
-        payment_method="계좌이체", withholding_income_tax="",
+            tax_amount="800000", account_hint="", service_start="",
+            service_end="")],
+        payment_method="계좌이체", service_start="", service_end="",
+        performance_date="", withholding_income_tax="",
         withholding_local_tax="", bank_name="", bank_account_no="",
         reference_po="", reference_original_doc="", notes="", warnings=[])
     base.update(kw)
@@ -97,6 +99,34 @@ def test_negative_amounts_survive_for_amended_invoice():
         tax_total="-1250000", gross_total="-13750000"))
     assert doc.gross_total == D("-13750000")
     assert doc.totals_consistent()
+
+
+def test_service_period_and_performance_date_are_parsed():
+    """K-IFRS 기간귀속 판단에 쓰이는 날짜가 도메인 모델로 넘어와야 한다."""
+    doc = to_voucher(_extracted(
+        service_start="2026-01-01", service_end="2026-12-31",
+        performance_date="2026-03-25",
+        line_items=[ExtractedLine(
+            line_no=1, description="연간 유지보수", spec="", quantity="1",
+            unit="식", unit_price="12000000", net_amount="12000000",
+            tax_amount="1200000", account_hint="",
+            service_start="2026-01-01", service_end="2026-12-31")]))
+    assert doc.service_start == date(2026, 1, 1)
+    assert doc.service_end == date(2026, 12, 31)
+    assert doc.performance_date == date(2026, 3, 25)
+    assert doc.line_items[0].service_end == date(2026, 12, 31)
+
+
+def test_performance_date_is_not_guessed_from_doc_date():
+    """문서에 없으면 작성일로 대체하지 않는다(K-IFRS 1115 인식일 오류 방지)."""
+    doc = to_voucher(_extracted(performance_date=""))
+    assert doc.performance_date is None
+
+
+def test_system_prompt_demands_period_extraction():
+    assert "service_start" in ex.SYSTEM_PROMPT
+    assert "performance_date" in ex.SYSTEM_PROMPT
+    assert "추측하지 않는다" in ex.SYSTEM_PROMPT
 
 
 def test_reference_docs_are_carried():

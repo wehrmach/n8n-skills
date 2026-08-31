@@ -65,6 +65,11 @@ class LineItem(BaseModel):
     plant: Optional[str] = Field(None, description="플랜트(WERKS)")
     po_number: Optional[str] = Field(None, description="참조 구매오더(EBELN)")
     po_item: Optional[str] = Field(None, description="구매오더 품목(EBELP)")
+    #: K-IFRS 기간귀속 판단용 - 재화·용역이 제공되는 기간
+    service_start: Optional[date] = Field(
+        None, description="용역·급부 제공 개시일. 일시 제공이면 null")
+    service_end: Optional[date] = Field(
+        None, description="용역·급부 제공 종료일. 일시 제공이면 null")
 
     @property
     def gross_amount(self) -> Decimal:
@@ -117,6 +122,13 @@ class VoucherDocument(BaseModel):
 
     payment_method: Optional[str] = Field(
         None, description="현금/카드/계좌이체/어음 등")
+    #: K-IFRS 인식시점 판단용
+    service_start: Optional[date] = Field(
+        None, description="계약·용역 제공 개시일(문서 전체 기준)")
+    service_end: Optional[date] = Field(
+        None, description="계약·용역 제공 종료일(문서 전체 기준)")
+    performance_date: Optional[date] = Field(
+        None, description="수행의무 이행일(인도·검수 완료일). 수익인식 기준일")
     reference_docs: dict[str, str] = Field(
         default_factory=dict,
         description="연관 문서 번호 (예: {'po_number': 'PO-2026-0198'})")
@@ -166,6 +178,25 @@ class PostingContext(BaseModel):
     approval_threshold: Decimal = Field(
         default=Decimal("10000000"),
         description="이 금액을 초과하면 사람 승인 없이 전기하지 않는다")
+
+    # ── K-IFRS 회계정책 파라미터 ──────────────────────────────────────────
+    capitalization_threshold: Decimal = Field(
+        default=Decimal("1000000"),
+        description="자산 인식 최소금액(중요성). 미만은 즉시 비용 처리한다")
+    lease_short_term_months: int = Field(
+        default=12, description="K-IFRS 1116 단기리스 면제 기준(개월)")
+    lease_low_value_threshold: Decimal = Field(
+        default=Decimal("7000000"),
+        description="K-IFRS 1116 소액리스 면제 기준(신품 기준 자산가액)")
+    deferral_min_amount: Decimal = Field(
+        default=Decimal("100000"),
+        description="이 금액 미만의 기간귀속 차이는 중요성 관점에서 이연하지 않는다")
+    period_end: Optional[date] = Field(
+        None, description="기간귀속 판단 기준일(보고기간 종료일). 없으면 전기일 기준")
+    intangible_capitalization: bool = Field(
+        default=False,
+        description="개발비 자본화 요건(K-IFRS 1038 문단 57) 충족을 회사가 "
+                    "이미 판정했는지 여부. False 면 판단 필요로 표시한다")
 
 
 # --------------------------------------------------------------------------- BAPI 호출/결과
@@ -235,6 +266,20 @@ class PostingPlan(BaseModel):
     notes: str = ""
     idempotency_key: Optional[str] = Field(
         None, description="중복 전기 방지 키(참조번호 XBLNR 로 사용)")
+
+    # ── K-IFRS 회계판단 결과 ──────────────────────────────────────────────
+    kifrs_recognition: str = Field(
+        default="", description="K-IFRS 인식 결론(당기비용/이연/자본화/수익 등)")
+    kifrs_substance: str = Field(default="", description="거래의 경제적 실질")
+    kifrs_standards: list[str] = Field(
+        default_factory=list, description="적용한 K-IFRS 기준서")
+    kifrs_rationale: list[str] = Field(
+        default_factory=list, description="회계처리 판단 근거(감사 추적용)")
+    kifrs_judgments: list[str] = Field(
+        default_factory=list, description="사람이 판단해야 하는 회계 쟁점")
+    amortization_schedule: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="선급비용 기간배분 스케줄. 결산 시 정기 전기 대상")
 
     @property
     def postable(self) -> bool:

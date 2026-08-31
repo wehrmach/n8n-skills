@@ -48,6 +48,11 @@ class ExtractedLine(BaseModel):
     tax_amount: str = Field(description="부가세액. 콤마 없는 숫자, 없으면 0")
     account_hint: str = Field(
         description="증빙에 계정과목이 명시되어 있으면 그 한글 계정명, 없으면 빈 문자열")
+    service_start: str = Field(
+        description="이 품목의 용역·급부 제공 개시일 YYYY-MM-DD. "
+                    "기간이 명시되지 않았거나 일시 제공이면 빈 문자열")
+    service_end: str = Field(
+        description="이 품목의 용역·급부 제공 종료일 YYYY-MM-DD. 없으면 빈 문자열")
 
 
 class ExtractedVoucher(BaseModel):
@@ -82,6 +87,13 @@ class ExtractedVoucher(BaseModel):
     bank_name: str = Field(description="계좌 은행명. 없으면 빈 문자열")
     bank_account_no: str = Field(description="계좌번호. 없으면 빈 문자열")
 
+    service_start: str = Field(
+        description="문서 전체의 계약·용역 제공 개시일 YYYY-MM-DD. 없으면 빈 문자열")
+    service_end: str = Field(
+        description="문서 전체의 계약·용역 제공 종료일 YYYY-MM-DD. 없으면 빈 문자열")
+    performance_date: str = Field(
+        description="수행의무 이행일 - 재화 인도일 또는 용역 검수 완료일 "
+                    "YYYY-MM-DD. 문서에 없으면 빈 문자열(작성일로 추정하지 말 것)")
     reference_po: str = Field(description="참조 발주/구매오더 번호. 없으면 빈 문자열")
     reference_original_doc: str = Field(
         description="수정세금계산서의 당초 승인번호 등. 없으면 빈 문자열")
@@ -150,6 +162,8 @@ def to_voucher(x: ExtractedVoucher, source_file: str | None = None) -> VoucherDo
             unit_price=_dec_opt(li.unit_price),
             net_amount=_dec(li.net_amount),
             tax_amount=_dec(li.tax_amount),
+            service_start=_date(li.service_start),
+            service_end=_date(li.service_end),
         )
         for i, li in enumerate(x.line_items, 1)
     ]
@@ -187,6 +201,8 @@ def to_voucher(x: ExtractedVoucher, source_file: str | None = None) -> VoucherDo
         net_total=net, tax_total=tax, gross_total=gross,
         line_items=lines, withholding=wht, bank_account=bank,
         payment_method=x.payment_method or None,
+        service_start=_date(x.service_start), service_end=_date(x.service_end),
+        performance_date=_date(x.performance_date),
         reference_docs=refs, notes=x.notes or None,
         source_file=source_file, extraction_warnings=warnings,
     )
@@ -219,6 +235,16 @@ SAP ERP 전기에 필요한 데이터를 정확히 추출한다.
 8. 워터마크('샘플', 'SAMPLE')와 안내문구는 데이터가 아니므로 무시한다.
 9. confidence 는 유형 분류에 대한 확신도다. 표지가 명확하면 0.9 이상,
    유사 서식과 혼동 가능하면 0.6~0.8, 근거가 약하면 0.5 미만으로 준다.
+
+[K-IFRS 기간귀속을 위한 추가 판독 - 매우 중요]
+10. service_start / service_end : 용역·급부가 제공되는 기간을 찾아 적는다.
+    "계약기간 2026-01-01 ~ 2026-12-31", "3월분", "연간", "1년 사용료",
+    "2026년 3월 사용분" 같은 표현이 근거다. 이 기간이 있어야 선급비용 이연
+    여부를 판단할 수 있다. 문서에 없으면 빈 문자열로 두고 추측하지 않는다.
+11. performance_date : 재화를 인도했거나 용역 검수가 완료된 날이다.
+    검수확인서·인수증·납품일 표기에서 찾는다. K-IFRS 상 수익·비용 인식일은
+    세금계산서 작성일이 아니라 이 날짜다. 문서에 없으면 반드시 빈 문자열로
+    두어라 - 작성일로 대체하면 안 된다.
 
 정확성이 속도보다 중요하다. 판독이 불확실하면 warnings 에 반드시 남긴다."""
 

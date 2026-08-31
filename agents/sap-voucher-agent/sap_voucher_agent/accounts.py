@@ -94,8 +94,11 @@ DEFAULT_RULES: tuple[AccountRule, ...] = (
     AccountRule("labor_daily", "836100", "잡급(일용노무비)",
                 ("일용", "노무비", "상하차", "일당")),
     AccountRule("salary", "801100", "급여", ("급여", "상여", "임금")),
-    AccountRule("software", "840100", "무형자산(소프트웨어)",
-                ("소프트웨어 개발", "ERP", "시스템 구축", "모듈 개발")),
+    # 소프트웨어 개발 지출의 자본화 여부는 K-IFRS 1038 개발단계 요건 판단 사항이다.
+    # 여기서는 기본값인 비용 계정으로 두고, 자본화는 kifrs.py 가 결정한다.
+    AccountRule("software_dev", "835200", "외주용역비(소프트웨어 개발)",
+                ("소프트웨어 개발", "ERP", "시스템 구축", "모듈 개발",
+                 "데이터 마이그레이션")),
 )
 
 
@@ -121,6 +124,24 @@ BALANCE_ACCOUNTS: dict[str, str] = {
     "fx_loss": "937100",           # 외환차손
     "bank_clearing": "103900",     # 은행미결계정
     "prepaid_tax": "136100",       # 선납세금
+    # ── K-IFRS 기간귀속·측정 관련 ──────────────────────────────────────────
+    "prepaid_expense": "133100",   # 선급비용 (K-IFRS 발생주의 이연)
+    "accrued_expense": "253300",   # 미지급비용 (기간 경과분)
+    "contract_liability": "255300",  # 계약부채(선수금) - K-IFRS 1115
+    "contract_asset": "109100",    # 계약자산 - K-IFRS 1115
+    "unearned_revenue": "255300",  # 선수수익 (계약부채와 동일 계정)
+    "rou_asset": "178100",         # 사용권자산 - K-IFRS 1116
+    "lease_liability": "258100",   # 리스부채 - K-IFRS 1116
+    "intangible_asset": "178200",  # 무형자산(소프트웨어) - K-IFRS 1038
+    "tangible_asset": "202100",    # 유형자산(비품) - K-IFRS 1016
+    "inventory": "146100",         # 재고자산 - K-IFRS 1002
+    "cip": "179100",               # 건설중인자산/개발중인자산
+    "annual_leave_provision": "295100",  # 연차수당충당부채 - K-IFRS 1019
+    "allowance_ecl": "109900",     # 대손충당금(기대신용손실) - K-IFRS 1109
+    "depreciation": "845100",      # 감가상각비
+    "amortization": "846100",      # 무형자산상각비
+    "interest_expense": "931100",  # 이자비용
+    "present_value_discount": "110900",  # 현재가치할인차금
 }
 
 
